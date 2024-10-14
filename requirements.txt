@@ -2,3 +2,8 @@ numpy
 pandas
 matplotlib
 seaborn
+tqdm
+scipy
+torch
+scikit-learn
+hmmlearn
