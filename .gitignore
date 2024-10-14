@@ -1,5 +1,4 @@
 *~
-data/
 venv/
 *.db
 *.csv
