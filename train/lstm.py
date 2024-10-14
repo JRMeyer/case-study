@@ -5,13 +5,13 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
-from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix
 from tqdm import tqdm
 
 # ArgParse setup
 parser = argparse.ArgumentParser(description='Train LSTM model for diabetes prediction')
-parser.add_argument('--input', type=str, default='data/FORMATTED.csv', help='Path to the input CSV file')
+parser.add_argument('--train_input', type=str, default='train_data.csv', help='Path to the input train CSV file')
+parser.add_argument('--test_input', type=str, default='test_data.csv', help='Path to the input test CSV file')
 parser.add_argument('--epochs', type=int, default=10, help='Number of training epochs')
 parser.add_argument('--batch_size', type=int, default=64, help='Batch size for training')
 parser.add_argument('--hidden_size', type=int, default=64, help='Hidden size of LSTM')
@@ -25,68 +25,16 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 # Load processed data from CSV
-print("\nLoading processed data from CSV file...")
-data = pd.read_csv(args.input)
-print(f"Data shape: {data.shape}")
-
-print("\nPreprocessing data...")
-# Map 'diabetes' column to binary labels
-label_mapping = {
-    'detected_diabetes': 1,
-    'detected_pre-diabetes': 1,
-    'undetected': 0,
-    'unknown': 0  # Map 'unknown' to 0 for simplicity
-}
-data['diabetes_label'] = data['diabetes'].map(label_mapping)
-print("Diabetes label mapping applied.")
-print(f"Unique diabetes labels: {data['diabetes_label'].unique()}")
-
-# Handle missing values if any
-print("\nChecking for missing values in the dataset...")
-missing_values = data.isnull().sum()
-print(missing_values)
-
-if missing_values.any():
-    print("\nHandling missing values...")
-    # Fill missing values in feature columns with zero or mean
-    exclude_columns = ['patient_id', 'report_date_utc', 'diabetes', 'diabetes_label']
-    feature_columns = [col for col in data.columns if col not in exclude_columns]
-    data[feature_columns] = data[feature_columns].fillna(0)
-    print("Missing values in feature columns filled with zeros.")
-    
-    # Handle missing values in 'diabetes_label' if any
-    if 'diabetes_label' in missing_values[missing_values > 0].index:
-        data = data.dropna(subset=['diabetes_label'])
-        print("Rows with missing 'diabetes_label' dropped.")
-    
-    # Convert 'report_date_utc' to datetime
-    data['report_date_utc'] = pd.to_datetime(data['report_date_utc'], errors='coerce')
-    # Drop rows with missing 'report_date_utc'
-    data = data.dropna(subset=['report_date_utc'])
-    print("Rows with invalid 'report_date_utc' dropped.")
-else:
-    print("No missing values detected.")
-
-# Exclude patients who only have 'unknown' diabetes status
-print("\nFiltering out patients who only have 'unknown' diabetes status...")
-valid_patients = data[data['diabetes'] != 'unknown']['patient_id'].unique()
-initial_patient_count = data['patient_id'].nunique()
-data = data[data['patient_id'].isin(valid_patients)].reset_index(drop=True)
-filtered_patient_count = data['patient_id'].nunique()
-print(f"Patients before filtering: {initial_patient_count}")
-print(f"Patients after filtering: {filtered_patient_count}")
-
-# Sort data by 'patient_id' and 'report_date_utc'
-data = data.sort_values(['patient_id', 'report_date_utc']).reset_index(drop=True)
-print("\nData sorted by 'patient_id' and 'report_date_utc'.")
+print("\nLoading processed data from CSV files...")
+train_data = pd.read_csv(args.train_input)
+test_data = pd.read_csv(args.test_input)
+print(f"Train data shape: {train_data.shape}")
+print(f"Test data shape: {test_data.shape}")
 
 # Define feature columns
-exclude_columns = ['patient_id', 'report_date_utc', 'diabetes', 'diabetes_label']
-feature_columns = [col for col in data.columns if col not in exclude_columns]
+exclude_columns = ['patient_id', 'report_date_utc', 'diabetes_label']
+feature_columns = [col for col in train_data.columns if col not in exclude_columns]
 print(f"\nFeature columns ({len(feature_columns)}): {feature_columns}")
-
-# Create sequences for each patient
-print("\nCreating sequences for each patient...")
 
 class PatientDataset(Dataset):
     def __init__(self, data, feature_columns):
@@ -103,7 +51,7 @@ class PatientDataset(Dataset):
         for pid in tqdm(self.patient_ids, desc="Processing patients"):
             patient_data = self.data[self.data['patient_id'] == pid]
             sequence = patient_data[self.feature_columns].values
-            label = patient_data['diabetes_label'].iloc[-1]  # Use the last known diabetes status
+            label = patient_data['diabetes_label'].iloc[-1]
             self.sequences.append(torch.tensor(sequence, dtype=torch.float32))
             self.labels.append(torch.tensor(label, dtype=torch.float32))
             self.lengths.append(len(sequence))
@@ -122,24 +70,10 @@ def collate_fn(batch):
     lengths = torch.tensor(lengths, dtype=torch.long)
     return sequences_padded, labels, lengths
 
-# Create the dataset
-print("\nInitializing dataset...")
-dataset = PatientDataset(data, feature_columns)
-
-# Split dataset into training and testing
-print("\nSplitting data into train and test sets...")
-train_indices, test_indices = train_test_split(
-    range(len(dataset)),
-    test_size=0.2,
-    random_state=42,
-    stratify=dataset.labels
-)
-print(f"Total sequences: {len(dataset)}")
-print(f"Training sequences: {len(train_indices)}")
-print(f"Testing sequences: {len(test_indices)}")
-
-train_dataset = torch.utils.data.Subset(dataset, train_indices)
-test_dataset = torch.utils.data.Subset(dataset, test_indices)
+# Create the datasets
+print("\nInitializing datasets...")
+train_dataset = PatientDataset(train_data, feature_columns)
+test_dataset = PatientDataset(test_data, feature_columns)
 
 train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
 test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn)

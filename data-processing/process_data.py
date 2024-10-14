@@ -4,12 +4,14 @@ import numpy as np
 import sqlite3
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.impute import SimpleImputer
+from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 
 # ArgParse setup
 parser = argparse.ArgumentParser(description='Process data for diabetes prediction model')
 parser.add_argument('--database', type=str, default='hospital_data.db', help='Path to SQLite database')
-parser.add_argument('--output', type=str, default='processed_data.csv', help='Path to output CSV file')
+parser.add_argument('--train_output', type=str, default='train_data.csv', help='Path to output train CSV file')
+parser.add_argument('--test_output', type=str, default='test_data.csv', help='Path to output test CSV file')
 args = parser.parse_args()
 
 print("Starting data processing for diabetes prediction model...")
@@ -23,7 +25,14 @@ patient_info = pd.read_sql("SELECT * FROM patient_info", conn)
 print("Merging and preprocessing data...")
 # Merge the dataframes
 merged_data = lab_results.merge(patient_info, on='patient_id')
-merged_data['report_date_utc'] = pd.to_datetime(merged_data['report_date_utc'])
+
+# Convert 'report_date_utc' to datetime, handling errors
+merged_data['report_date_utc'] = pd.to_datetime(merged_data['report_date_utc'], errors='coerce')
+
+# Drop rows with invalid dates
+merged_data = merged_data.dropna(subset=['report_date_utc'])
+
+# Sort the data
 merged_data = merged_data.sort_values(['patient_id', 'report_date_utc']).reset_index(drop=True)
 
 print("Categorizing diabetes status over time...")
@@ -91,8 +100,6 @@ X_categorical_imputed = pd.DataFrame(imputer_cat.fit_transform(X_categorical), c
 
 # Encode categorical features
 print("Encoding categorical features...")
-from sklearn.preprocessing import OneHotEncoder
-
 encoder = OneHotEncoder(drop='first', sparse_output=False)
 encoded_cat = encoder.fit_transform(X_categorical_imputed)
 encoded_cat_df = pd.DataFrame(encoded_cat, columns=encoder.get_feature_names_out(categorical_features))
@@ -102,26 +109,69 @@ processed_data = pd.concat([processed_data.reset_index(drop=True), encoded_cat_d
 
 # Add other necessary columns
 processed_data['patient_id'] = merged_data['patient_id'].values
-processed_data['diabetes'] = merged_data['diabetes'].values
 processed_data['report_date_utc'] = merged_data['report_date_utc'].values
 processed_data['birth_date'] = merged_data['birth_date'].values
 
+# Convert 'birth_date' to datetime, handling errors
+processed_data['birth_date'] = pd.to_datetime(processed_data['birth_date'], errors='coerce')
+
 # Calculate age at the time of each measurement
-processed_data['age'] = (
-    pd.to_datetime(processed_data['report_date_utc']) - pd.to_datetime(processed_data['birth_date'])
-).dt.days / 365.25
+processed_data['age'] = (processed_data['report_date_utc'] - processed_data['birth_date']).dt.days / 365.25
 
 # Drop birth_date as we now have age
 processed_data = processed_data.drop(columns=['birth_date'])
 
-print(f"Processed data shape: {processed_data.shape}")
-print(f"Columns: {processed_data.columns.tolist()}")
+# Map 'diabetes' column to binary labels
+print("\nMapping diabetes status to binary labels...")
+label_mapping = {
+    'detected_diabetes': 1,
+    'detected_pre-diabetes': 1,
+    'undetected': 0,
+    'unknown': 0  # Map 'unknown' to 0 for simplicity
+}
+processed_data['diabetes_label'] = merged_data['diabetes'].map(label_mapping)
 
-# Print diabetes value distribution in processed data
-print(f"Processed diabetes value distribution:\n{processed_data['diabetes'].value_counts(dropna=False)}")
+# Handle missing values if any
+print("\nHandling missing values...")
+processed_data = processed_data.fillna(0)
 
-print(f"\nSaving processed data to {args.output}")
-processed_data.to_csv(args.output, index=False)
+# Exclude patients who only have 'unknown' diabetes status
+print("\nFiltering out patients who only have 'unknown' diabetes status...")
+valid_patients = merged_data[merged_data['diabetes'] != 'unknown']['patient_id'].unique()
+initial_patient_count = processed_data['patient_id'].nunique()
+processed_data = processed_data[processed_data['patient_id'].isin(valid_patients)].reset_index(drop=True)
+filtered_patient_count = processed_data['patient_id'].nunique()
+print(f"Patients before filtering: {initial_patient_count}")
+print(f"Patients after filtering: {filtered_patient_count}")
+
+# Ensure 'patient_id' and 'report_date_utc' are of the correct type
+processed_data['patient_id'] = processed_data['patient_id'].astype(int)
+processed_data['report_date_utc'] = pd.to_datetime(processed_data['report_date_utc'])
+
+# Sort data by 'patient_id' and 'report_date_utc'
+processed_data = processed_data.sort_values(['patient_id', 'report_date_utc']).reset_index(drop=True)
+print("\nData sorted by 'patient_id' and 'report_date_utc'.")
+
+# Create a stratification variable based on the last diabetes label for each patient
+stratify_variable = processed_data.groupby('patient_id')['diabetes_label'].last()
+
+# Split the data into train and test sets
+print("\nSplitting data into train and test sets...")
+train_patients, test_patients = train_test_split(
+    stratify_variable.index,
+    test_size=0.2,
+    random_state=42,
+    stratify=stratify_variable
+)
+
+train_data = processed_data[processed_data['patient_id'].isin(train_patients)]
+test_data = processed_data[processed_data['patient_id'].isin(test_patients)]
+
+print(f"\nSaving processed train data to {args.train_output}")
+train_data.to_csv(args.train_output, index=False)
+
+print(f"Saving processed test data to {args.test_output}")
+test_data.to_csv(args.test_output, index=False)
 
 print("Data processing completed.")
 conn.close()
