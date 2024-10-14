@@ -33,6 +33,9 @@ print(f"Test data shape: {test_data.shape}")
 
 # Define feature columns
 exclude_columns = ['patient_id', 'report_date_utc', 'diabetes_label', 'hba1c', 'fasting_blood_glucose']
+#exclude_columns = ['patient_id', 'report_date_utc', 'diabetes_label', 'fasting_blood_glucose']
+#exclude_columns = ['patient_id', 'report_date_utc', 'diabetes_label', 'hba1c']
+#exclude_columns = ['patient_id', 'report_date_utc', 'diabetes_label']
 feature_columns = [col for col in train_data.columns if col not in exclude_columns]
 print(f"\nFeature columns ({len(feature_columns)}): {feature_columns}")
 
